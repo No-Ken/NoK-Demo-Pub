@@ -1,0 +1,21 @@
+{
+  "name": "task-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "format:check": "turbo run format:check",
+    "format:fix": "turbo run format:fix",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@openapitools/openapi-generator-cli": "^2.7.0",
+    "turbo": "^1.12.3"
+  },
+  "packageManager": "pnpm@8.15.1"
+}

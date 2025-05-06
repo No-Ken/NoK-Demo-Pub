@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.json", // ルートのtsconfig.jsonを継承
+  "compilerOptions": {
+    "outDir": "./dist", // コンパイル後の出力先
+    "rootDir": "./src", // TypeScriptソースのルート
+    "module": "CommonJS", // Node.js環境で一般的な形式
+    "target": "ES2021",   // Node.js v18/20 でサポートされる比較的新しいECMAScriptバージョン
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".", // エイリアスパスの基点
+    "paths": {      // エイリアスパス設定
+      "@/*": ["src/*"],
+      "@task/types": ["../../libs/types/src"],
+      "@task/validators": ["../../libs/validators/src"]
+    },
+    "types": ["node", "express", "vitest"]
+  },
+  "include": ["src/**/*"], // コンパイル対象
+  "exclude": ["node_modules", "dist", "**/*.test.ts"] // コンパイル除外対象
+}

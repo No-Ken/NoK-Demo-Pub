@@ -1,0 +1,108 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Helper Functions ---
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function isBackendRequest() {
+      // バックエンドからのリクエスト判定 : LINE Bot / Cloud Run SA
+      return request.auth.token.backend == true;
+    }
+
+    function isGroupMember(groupId, userId) {
+      return exists(/databases/$(database)/documents/groups/$(groupId)) &&
+             get(/databases/$(database)/documents/groups/$(groupId)).data.members[userId] != null;
+    }
+    function isScheduleParticipant(scheduleId, userId) {
+      return exists(/databases/$(database)/documents/schedules/$(scheduleId)/scheduleParticipants/$(userId));
+    }
+    function isScheduleParticipantOrOwner(scheduleId, userId) {
+      let s = get(/databases/$(database)/documents/schedules/$(scheduleId)).data;
+      return isOwner(s.createdBy) || isScheduleParticipant(scheduleId, userId);
+    }
+    function isWarikanMember(projectId, userId) {
+      return exists(/databases/$(database)/documents/warikanProjects/$(projectId)/warikanMembers/$(userId));
+    }
+    function isWarikanParticipantOrOwner(projectId, userId) {
+      let p = get(/databases/$(database)/documents/warikanProjects/$(projectId)).data;
+      return isOwner(p.createdBy) || isWarikanMember(projectId, userId);
+    }
+    function isSharedMemoEditor(memoId, userId) {
+      return exists(/databases/$(database)/documents/sharedMemos/$(memoId)/sharedMemoEditors/$(userId));
+    }
+
+    // ## users ##
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if isBackendRequest();
+    }
+
+    // ## groups ##
+    match /groups/{groupId} {
+      allow read: if isSignedIn() && isGroupMember(groupId, request.auth.uid);
+      allow write: if isBackendRequest();
+    }
+
+    // ## schedules ##
+    match /schedules/{scheduleId} {
+      allow read: if isSignedIn() && isScheduleParticipantOrOwner(scheduleId, request.auth.uid);
+      allow write: if isBackendRequest();
+
+      match /scheduleParticipants/{participantId} {
+        allow read: if isSignedIn() && isScheduleParticipantOrOwner(scheduleId, request.auth.uid);
+        allow write: if isBackendRequest();
+      }
+      match /scheduleVotes/{voteId} {
+        allow read: if isSignedIn() && isScheduleParticipantOrOwner(scheduleId, request.auth.uid);
+        allow write: if isBackendRequest();
+      }
+    }
+
+    // ## warikanProjects ##
+    match /warikanProjects/{projectId} {
+      allow read: if isSignedIn() && isWarikanParticipantOrOwner(projectId, request.auth.uid);
+      allow write: if isBackendRequest();
+
+      match /warikanMembers/{memberId} {
+        allow read, write: if isBackendRequest();
+      }
+      match /warikanPayments/{paymentId} {
+        allow read, write: if isBackendRequest();
+      }
+      match /warikanSettlements/{settlementId} {
+        allow read, write: if isBackendRequest();
+      }
+    }
+
+    // ## personalMemos ##
+    match /personalMemos/{memoId} {
+      allow get: if isSignedIn() && get(/databases/$(database)/documents/personalMemos/$(memoId)).data.userId == request.auth.uid;
+      allow list: if isSignedIn() && request.query.limit <= 100;
+      allow write: if isBackendRequest();
+    }
+
+    // ## memoPages ##
+    match /memoPages/{pageId} {
+      allow get: if isSignedIn() && get(/databases/$(database)/documents/memoPages/$(pageId)).data.userId == request.auth.uid;
+      allow list: if isSignedIn() && request.query.limit <= 100;
+      allow write: if isBackendRequest();
+    }
+
+    // ## sharedMemos ##
+    match /sharedMemos/{sharedMemoId} {
+      allow read: if isSignedIn() && (
+        (resource.data.groupId != null && isGroupMember(resource.data.groupId, request.auth.uid)) ||
+        isSharedMemoEditor(sharedMemoId, request.auth.uid) ||
+        isOwner(resource.data.createdBy)
+      );
+      allow write: if isBackendRequest();
+
+      match /sharedMemoEditors/{editorUserId} {
+        allow read: if isSignedIn() && (request.auth.uid == editorUserId || isOwner(get(/databases/$(database)/documents/sharedMemos/$(sharedMemoId)).data.createdBy));
+        allow write: if isBackendRequest();
+      }
+    }
+  }
+}

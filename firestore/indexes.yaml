@@ -1,0 +1,33 @@
+indexes:
+  # 各種インデックス定義を追加
+  - collectionGroup: ai_interactions
+    queryScope: COLLECTION
+    fields:
+    - name: userId
+      order: ASCENDING
+    - name: timestamp
+      order: DESCENDING
+  
+  - collectionGroup: schedules
+    queryScope: COLLECTION
+    fields:
+    - name: userId
+      order: ASCENDING
+    - name: createdAt
+      order: DESCENDING
+  
+  - collectionGroup: warikanProjects
+    queryScope: COLLECTION
+    fields:
+    - name: userId
+      order: ASCENDING
+    - name: createdAt
+      order: DESCENDING
+  
+  - collectionGroup: memos
+    queryScope: COLLECTION
+    fields:
+    - name: userId
+      order: ASCENDING
+    - name: updatedAt
+      order: DESCENDING

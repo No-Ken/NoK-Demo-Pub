@@ -1,0 +1,41 @@
+{
+  "name": "@task-mvp/liff",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "format:check": "prettier --check .",
+    "format:fix": "prettier --write .",
+    "generate:api": "openapi-generator-cli generate -c ../../openapi-generator.config.yaml"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.75.0",
+    "axios": "^1.6.7",
+    "firebase": "^10.14.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.30.0",
+    "zustand": "^5.0.4"
+  },
+  "devDependencies": {
+    "@line/liff": "^2.26.0",
+    "@openapitools/openapi-generator-cli": "^2.7.0",
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^8.56.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-react-refresh": "^0.4.5",
+    "postcss": "^8.5.3",
+    "prettier": "^3.2.5",
+    "tailwindcss": "^4.1.5",
+    "typescript": "^5.2.2",
+    "vite": "^5.1.0"
+  }
+}

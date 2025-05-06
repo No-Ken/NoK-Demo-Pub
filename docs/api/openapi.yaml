@@ -1,0 +1,761 @@
+openapi: 3.1.0 # または 3.0.3 など広くサポートされているバージョン
+info:
+  title: TASK MVP API
+  version: 0.1.0 # プロジェクトのバージョンに合わせて更新
+  description: AI秘書「TASK」のバックエンドAPI仕様書 (MVP)
+servers:
+  - url: /api/v1 # APIのベースパス
+    description: アプリケーションルートからの相対パス
+
+components:
+  # --- 共通レスポンス定義 ---
+  responses:
+    NoContent:
+      description: 成功（返却データなし）
+      content: {}
+
+    BadRequest:
+      description: リクエストが不正
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                description: エラーメッセージ
+            required: [message]
+
+    Unauthorized:
+      description: 認証エラー
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                description: エラーメッセージ
+            required: [message]
+
+    Forbidden:
+      description: アクセス権限なし
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  # --- 再利用可能なデータスキーマ定義 ---
+  schemas:
+    # --- Input Schemas ---
+    CreateProjectInput:
+      type: object
+      properties:
+        projectName:
+          type: string
+          description: 新しい割り勘プロジェクトの名前
+          minLength: 1
+          example: "チームランチ代"
+      required:
+        - projectName
+
+    AddPaymentInput:
+      type: object
+      properties:
+        payerMemberId:
+          type: string
+          description: 支払者のメンバーID (warikanMembersのドキュメントID)
+          minLength: 1
+        amount:
+          type: number
+          format: double
+          description: 支払い金額 (正の数)
+          minimum: 0.01
+        description:
+          type: string
+          description: 支払い内容のメモ (任意)
+          example: "ランチ代A店"
+        participants:
+          type: array
+          description: この支払いに関与したメンバーIDのリスト (任意、指定なければ全員？)
+          items:
+            type: string
+      required:
+        - payerMemberId
+        - amount
+
+    AddMemberInput: # 割り勘メンバー追加用
+      type: object
+      properties:
+        displayName:
+          type: string
+          description: メンバーの表示名
+          minLength: 1
+        lineUserId:
+          type: string
+          description: LINEユーザーID (ゲストでない場合)
+          nullable: true # optional の代わりに nullable を使うことが多い
+        isGuest: # isGuest は lineUserId の有無でサーバー側で判断する方がシンプルかも？
+          type: boolean
+          description: ゲストユーザーかどうか (lineUserIdがあればfalse)
+          readOnly: true # 基本的にサーバー側で判定
+      required:
+        - displayName
+      # 注意: lineUserId がない場合はゲストとして扱われる
+
+    CreateScheduleInput:
+      type: object
+      properties:
+        title:
+          type: string
+          description: 日程調整のタイトル
+          minLength: 1
+        description:
+          type: string
+          description: 詳細説明 (任意)
+          nullable: true
+      required:
+        - title
+
+    AddParticipantInput:
+      type: object
+      properties:
+        displayName:
+          type: string
+          description: 参加者の表示名
+          minLength: 1
+        lineUserId:
+          type: string
+          description: LINEユーザーID (ゲストでない場合)
+          nullable: true
+      required:
+        - displayName
+
+    AddCandidateDatesInput:
+      type: object
+      properties:
+        dates:
+          type: array
+          description: 候補日時のISO8601文字列リスト (最低1つ)
+          items:
+            type: string
+            format: date-time
+          minItems: 1
+      required:
+        - dates
+
+    VoteInput:
+      type: object
+      properties:
+        optionId:
+          type: string
+          description: 投票対象の候補日オプションID
+          minLength: 1
+        vote:
+          type: string
+          enum: [ok, maybe, ng]
+          description: 投票内容
+        comment:
+          type: string
+          description: コメント (任意)
+          nullable: true
+      required:
+        - optionId
+        - vote
+
+    # --- Data Model Schemas (Firestoreドキュメントベース) ---
+    FirestoreTimestamp: # Timestampの表現 (共通化)
+      type: string
+      format: date-time
+      description: ISO8601形式の日時文字列 (UTC)
+      example: "2025-05-02T10:50:56.123Z"
+
+    WarikanProject:
+      type: object
+      properties:
+        id: { type: string, description: Project ID, readOnly: true }
+        projectName: { type: string }
+        status: { type: string, enum: [active, settled] }
+        createdBy: { type: string, description: User ID, readOnly: true }
+        groupId: { type: string, nullable: true }
+        shareUrlToken: { type: string, nullable: true, readOnly: true }
+        createdAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+        updatedAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+        totalAmount: { type: number, format: double, minimum: 0, readOnly: true }
+        memberCount: { type: integer, minimum: 0, readOnly: true }
+      required: [id, projectName, status, createdBy, createdAt, updatedAt, totalAmount, memberCount]
+
+    WarikanMember:
+      type: object
+      properties:
+        id: { type: string, description: Member ID (Doc ID), readOnly: true }
+        projectId: { type: string, description: Parent Project ID, readOnly: true }
+        isGuest: { type: boolean, readOnly: true }
+        lineUserId: { type: string, nullable: true, readOnly: true }
+        displayName: { type: string }
+        balance: { type: number, format: double, description: 精算時の収支 }
+        addedAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+      required: [id, projectId, isGuest, displayName, balance, addedAt]
+
+    WarikanPayment:
+      type: object
+      properties:
+        id: { type: string, description: Payment ID, readOnly: true }
+        projectId: { type: string, description: Parent Project ID, readOnly: true }
+        payerMemberId: { type: string, description: 支払者のメンバーID }
+        amount: { type: number, format: double, minimum: 0.01 }
+        description: { type: string, nullable: true }
+        paymentDate: { $ref: '#/components/schemas/FirestoreTimestamp', nullable: true } # 記録日時を使う場合はnull
+        createdAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+        participants: { type: array, items: { type: string }, nullable: true }
+      required: [id, projectId, payerMemberId, amount, createdAt]
+
+    WarikanSettlement: # 精算結果表示用 (詳細)
+      type: object
+      properties:
+        # payerMemberId, receiverMemberId の代わりに詳細情報を含める
+        payer: { $ref: '#/components/schemas/WarikanMember' } # 支払うべき人
+        receiver: { $ref: '#/components/schemas/WarikanMember' } # 受け取るべき人
+        amount: { type: number, format: double, minimum: 0.01 }
+        isDone: { type: boolean, default: false } # 精算済みか (任意)
+      required: [payer, receiver, amount]
+
+    Schedule:
+      type: object
+      properties:
+        id: { type: string, description: Schedule ID, readOnly: true }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        status: { type: string, enum: [adjusting, confirmed, cancelled] }
+        createdBy: { type: string, description: User ID, readOnly: true }
+        groupId: { type: string, nullable: true }
+        createdAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+        updatedAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+        candidateDates: # 候補日リスト
+          type: array
+          items:
+            type: object
+            properties:
+              optionId: { type: string }
+              datetime: { $ref: '#/components/schemas/FirestoreTimestamp' }
+            required: [optionId, datetime]
+          nullable: true
+        confirmedDateTime: { $ref: '#/components/schemas/FirestoreTimestamp', nullable: true }
+        isArchived: { type: boolean, default: false, readOnly: true }
+      required: [id, title, status, createdBy, createdAt, updatedAt, isArchived]
+
+    ScheduleParticipant:
+      type: object
+      properties:
+        id: { type: string, description: Participant ID (Doc ID), readOnly: true }
+        scheduleId: { type: string, description: Parent Schedule ID, readOnly: true }
+        isGuest: { type: boolean, readOnly: true }
+        lineUserId: { type: string, nullable: true, readOnly: true }
+        displayName: { type: string }
+        addedAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+      required: [id, scheduleId, isGuest, displayName, addedAt]
+
+    ScheduleVote:
+      type: object
+      properties:
+        id: { type: string, description: Vote ID (Doc ID), readOnly: true }
+        scheduleId: { type: string, description: Parent Schedule ID, readOnly: true }
+        optionId: { type: string }
+        participantId: { type: string } # 誰の投票か (ScheduleParticipant ID)
+        vote: { type: string, enum: [ok, maybe, ng] }
+        comment: { type: string, nullable: true }
+        votedAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+      required: [id, scheduleId, optionId, participantId, vote, votedAt]
+
+    # --- Detail Schemas (Responseでサブコレクション情報含む場合) ---
+    WarikanProjectDetail: # プロジェクト詳細取得用
+      allOf: # WarikanProjectを継承しつつ追加
+        - $ref: '#/components/schemas/WarikanProject'
+        - type: object
+          properties:
+            members:
+              type: array
+              items:
+                $ref: '#/components/schemas/WarikanMember'
+            payments:
+              type: array
+              items:
+                $ref: '#/components/schemas/WarikanPayment'
+          required: [members, payments]
+
+    ScheduleDetail: # スケジュール詳細取得用
+      allOf:
+        - $ref: '#/components/schemas/Schedule'
+        - type: object
+          properties:
+            participants:
+              type: array
+              items:
+                $ref: '#/components/schemas/ScheduleParticipant'
+            votes:
+              type: array
+              items:
+                $ref: '#/components/schemas/ScheduleVote'
+          required: [participants, votes]
+
+    # --- ★ Shared Memo Schemas (追加) ---
+    SharedMemo:
+      type: object
+      description: 共有メモのデータ構造
+      properties:
+        id: { type: string, description: Shared Memo ID, readOnly: true }
+        title: { type: string, minLength: 1 }
+        templateType: { type: string, enum: [meeting, outing, free], default: free }
+        content: { type: string, nullable: true }
+        createdBy: { type: string, description: Creator User ID, readOnly: true }
+        groupId: { type: string, nullable: true }
+        createdAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+        updatedAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+        lastEditorId: { type: string, nullable: true, readOnly: true }
+        readableUserIds:
+          type: array
+          items: { type: string }
+          description: List of user IDs who can read/write this memo
+          readOnly: true
+        isArchived: { type: boolean, default: false, readOnly: true }
+      required: [id, title, createdBy, createdAt, updatedAt, readableUserIds, isArchived]
+
+    SharedMemoEditor:
+      type: object
+      description: 共有メモの編集者情報
+      properties:
+        userId: { type: string, description: Editor's User ID, readOnly: true }
+        addedAt: { $ref: '#/components/schemas/FirestoreTimestamp' }
+      required: [userId, addedAt]
+
+    CreateSharedMemoInput:
+      type: object
+      properties:
+        title: { type: string, minLength: 1 }
+        templateType: { type: string, enum: [meeting, outing, free], nullable: true }
+        content: { type: string, nullable: true }
+        groupId: { type: string, nullable: true, description: 関連付けるグループID (任意) }
+      required: [title]
+
+    UpdateSharedMemoInput:
+      type: object
+      properties:
+        title: { type: string, minLength: 1 }
+        content: { type: string, nullable: true }
+
+    AddEditorInput:
+      type: object
+      properties:
+        editorUserId: { type: string, minLength: 1, description: 追加する編集者のユーザーID }
+      required: [editorUserId]
+
+    ListSharedMemosResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/SharedMemo' }
+        nextCursor: { type: string, nullable: true }
+      required: [data]
+
+    # --- Common Schemas ---
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string, description: エラーメッセージ }
+      required: [error]
+
+  # --- 認証方式の定義 ---
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+
+# --- デフォルトで全APIに認証を適用 ---
+security:
+  - bearerAuth: []
+
+# --- APIパス (エンドポイント) 定義 ---
+paths:
+  # --- Warikan Paths ---
+  /warikan/projects:
+    post:
+      summary: 新規割り勘プロジェクト作成
+      operationId: createWarikanProject
+      tags: [Warikan]
+      security: [{"bearerAuth": []}] # 明示的に書くことも可
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateProjectInput' }
+      responses:
+        '201':
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WarikanProject' }
+        '400': { $ref: '#/components/responses/BadRequest' } # 共通レスポンス定義も可能
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /warikan/projects/{id}:
+    get:
+      summary: 割り勘プロジェクト詳細取得
+      operationId: getWarikanProjectById
+      tags: [Warikan]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: Project ID
+      responses:
+        '200':
+          description: 成功 (メンバー・支払い情報含む)
+          content:
+            application/json:
+              # 詳細取得用のスキーマを参照
+              schema: { $ref: '#/components/schemas/WarikanProjectDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /warikan/projects/{id}/members:
+    post:
+      summary: 割り勘プロジェクトにメンバー追加
+      operationId: addWarikanMember
+      tags: [Warikan]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Project ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddMemberInput' }
+      responses:
+        '201':
+          description: メンバー追加成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WarikanMember' } # 追加されたメンバー情報
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /warikan/projects/{id}/payments:
+    post:
+      summary: 支払い記録追加
+      operationId: addWarikanPayment
+      tags: [Warikan]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Project ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddPaymentInput' }
+      responses:
+        '201':
+          description: 支払い追加成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { id: { type: string, description: Payment ID } }
+                required: [id]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      summary: 支払い記録一覧取得
+      operationId: listWarikanPayments
+      tags: [Warikan]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Project ID }
+        # TODO: ページネーション用クエリパラメータ (limit, offset or cursor)
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WarikanPayment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /warikan/projects/{id}/settlements:
+    get:
+      summary: 精算結果取得
+      operationId: getWarikanSettlements
+      tags: [Warikan]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Project ID }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WarikanSettlement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /warikan/projects/{id}/settle:
+    post:
+      summary: プロジェクトを精算済みにする
+      operationId: settleWarikanProject
+      tags: [Warikan]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Project ID }
+      responses:
+        '200': # または 204 No Content
+          description: 精算完了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WarikanProject' } # 更新後のプロジェクト情報
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --- Schedule Paths ---
+  /schedules:
+    post:
+      summary: 新規スケジュール作成
+      operationId: createSchedule
+      tags: [Schedule]
+      security: [{"bearerAuth": []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateScheduleInput' }
+      responses:
+        '201':
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Schedule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /schedules/{id}:
+    get:
+      summary: スケジュール詳細取得
+      operationId: getScheduleById
+      tags: [Schedule]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Schedule ID }
+      responses:
+        '200':
+          description: 成功 (参加者・投票情報含む)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduleDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /schedules/{id}/participants:
+    post:
+      summary: スケジュールに参加者追加
+      operationId: addScheduleParticipant
+      tags: [Schedule]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Schedule ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddParticipantInput' }
+      responses:
+        '201':
+          description: 参加者追加成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduleParticipant' } # 追加された参加者情報
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /schedules/{id}/candidates:
+    post:
+      summary: 候補日時追加
+      operationId: addScheduleCandidateDates
+      tags: [Schedule]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Schedule ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddCandidateDatesInput' }
+      responses:
+        '204': { description: 候補日時追加成功 (No Content) }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /schedules/{id}/votes:
+    post:
+      summary: 候補日時に投票
+      operationId: addScheduleVote
+      tags: [Schedule]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Schedule ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoteInput' }
+      responses:
+        '204': { description: 投票成功 (No Content) }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /schedules/{id}/confirm:
+    post:
+      summary: スケジュールを確定する
+      operationId: confirmSchedule
+      tags: [Schedule]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Schedule ID }
+      responses:
+        '204': { description: 確定成功 (No Content) }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --- ★ Shared Memo Paths (追加) ---
+  /shared-memos:
+    post:
+      summary: Create a shared memo
+      operationId: createSharedMemo
+      tags: [Shared Memo]
+      security: [{"bearerAuth": []}]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateSharedMemoInput' }}}
+      responses:
+        '201':
+          description: Shared memo created
+          content: { application/json: { schema: { $ref: '#/components/schemas/SharedMemo' }}}
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      summary: List accessible shared memos (pagination)
+      operationId: listSharedMemos
+      tags: [Shared Memo]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - name: limit
+          in: query
+          description: Max number of memos to return
+          required: false
+          schema: { type: integer, maximum: 50, default: 20 }
+        - name: cursor
+          in: query
+          description: Cursor for pagination (last memo ID from previous page)
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success
+          content: { application/json: { schema: { $ref: '#/components/schemas/ListSharedMemosResponse' }}}
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /shared-memos/{id}:
+    get:
+      summary: Get a shared memo by ID
+      operationId: getSharedMemoById
+      tags: [Shared Memo]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Shared Memo ID }
+      responses:
+        '200':
+          description: Success
+          content: { application/json: { schema: { $ref: '#/components/schemas/SharedMemo' }}}
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      summary: Update a shared memo
+      operationId: updateSharedMemo
+      tags: [Shared Memo]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Shared Memo ID }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UpdateSharedMemoInput' }}}
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      summary: Archive (soft delete) a shared memo
+      operationId: archiveSharedMemo
+      tags: [Shared Memo]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Shared Memo ID }
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /shared-memos/{id}/editors:
+    post:
+      summary: Add an editor to a shared memo
+      operationId: addSharedMemoEditor
+      tags: [Shared Memo Editor]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Shared Memo ID }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/AddEditorInput' }}}
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /shared-memos/{id}/editors/{editorId}:
+    delete:
+      summary: Remove an editor from a shared memo
+      operationId: removeSharedMemoEditor
+      tags: [Shared Memo Editor]
+      security: [{"bearerAuth": []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Shared Memo ID }
+        - { name: editorId, in: path, required: true, schema: { type: string }, description: Editor User ID to remove }
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
